@@ -1,8 +1,9 @@
 import bpy
 from bpy.utils import register_class, unregister_class, previews
 import os
-from .. dicts import keys as keysdict
-from .. dicts import classes as classesdict
+from .. registration import keys as keysdict
+from .. registration import classes as classesdict
+from .. msgbus import group_name_change, group_color_change
 
 
 def get_path():
@@ -18,10 +19,12 @@ def get_prefs():
 
 
 def get_addon(addon, debug=False):
+    """
+    look for addon by name
+    return registration status, foldername, version and path
+    """
     import addon_utils
 
-    # look for addon by name and find folder name and path
-    # Note, this will also find addons that aren't registered!
 
     for mod in addon_utils.modules():
         name = mod.bl_info["name"]
@@ -45,7 +48,7 @@ def get_addon(addon, debug=False):
 
 def get_addon_prefs(addon):
     _, foldername, _, _ = get_addon(addon)
-    return bpy.context.preferences.addons.get(foldername)
+    return bpy.context.preferences.addons.get(foldername).preferences
 
 
 # CLASS REGISTRATION
@@ -195,27 +198,23 @@ def unregister_icons(icons):
     previews.remove(icons)
 
 
-# CONTEXT MENU ADDITION
-
-def object_context_menu(self, context):
-    self.layout.menu("MACHIN3_MT_machin3tools_object_context_menu")
-    self.layout.separator()
+# MSGBUS
 
 
-def add_object_context_menu(runtime=False):
-    if get_prefs().activate_object_context_menu or runtime:
-        bpy.types.VIEW3D_MT_object_context_menu.prepend(object_context_menu)
+def register_msgbus(owner):
+    bpy.msgbus.subscribe_rna(key=(bpy.types.Object, 'color'), owner=owner, args=(), notify=group_color_change)
+    bpy.msgbus.subscribe_rna(key=(bpy.types.Object, 'name'), owner=owner, args=(), notify=group_name_change)
 
 
-def remove_object_context_menu(runtime=False):
-    # if get_prefs().activate_object_context_menu or runtime:
-    bpy.types.VIEW3D_MT_object_context_menu.remove(object_context_menu)
+def unregister_msgbus(owner):
+    bpy.msgbus.clear_by_owner(owner)
 
 
-# ADD OBJECTS ADDITION
+def reload_msgbus():
+    from .. import owner
 
-def add_object_buttons(self, context):
-    self.layout.operator("machin3.quadsphere", text="Quad Sphere", icon='SPHERE')
+    unregister_msgbus(owner)
+    register_msgbus(owner)
 
 
 # RUNTIME TOOL (DE)ACTIVATION
@@ -263,11 +262,6 @@ def activate(self, register, tool):
         classlist.clear()
         keylist.clear()
 
-        # MENU ADDITION
-
-        if tool == "object_context_menu":
-            add_object_context_menu(runtime=True)
-
 
     # UN-REGISTER
 
@@ -310,12 +304,6 @@ def activate(self, register, tool):
 
         if classes:
             print("Unregistered MACHIN3tools' %s" % (name))
-
-
-        # MENU REMOVAL
-
-        if tool == "object_context_menu":
-            remove_object_context_menu(runtime=True)
 
 
 # GET CORE, TOOLS and PIES - CLASSES and KEYMAPS - for startup registration
@@ -374,6 +362,34 @@ def get_tools():
     classlists, keylists, count = get_mesh_cut(classlists, keylists, count)
 
 
+    # SURFACE SLIDE
+    classlists, keylists, count = get_surface_slide(classlists, keylists, count)
+
+
+    # FILEBROWSER TOOLS
+    classlists, keylists, count = get_filebrowser(classlists, keylists, count)
+
+
+    # SMART DRIVE
+    classlists, keylists, count = get_smart_drive(classlists, keylists, count)
+
+
+    # UNITY TOOLS
+    classlists, keylists, count = get_unity(classlists, keylists, count)
+
+
+    # MATERIAL PICKER
+    classlists, keylists, count = get_material_picker(classlists, keylists, count)
+
+
+    # GROUP
+    classlists, keylists, count = get_group(classlists, keylists, count)
+
+
+    # THREADS
+    classlists, keylists, count = get_thread(classlists, keylists, count)
+
+
     # CUSTOMIZE
     classlists, keylists, count = get_customize(classlists, keylists, count)
 
@@ -410,9 +426,19 @@ def get_pie_menus():
     classlists, keylists, count = get_align_pie(classlists, keylists, count)
 
 
-    # CURSOR
+    # CURSOR + ORIGIN
 
     classlists, keylists, count = get_cursor_pie(classlists, keylists, count)
+
+
+    # TRANSFORM
+
+    classlists, keylists, count = get_transform_pie(classlists, keylists, count)
+
+
+    # SNAP
+
+    classlists, keylists, count = get_snapping_pie(classlists, keylists, count)
 
 
     # COLLECTIONS
@@ -424,17 +450,10 @@ def get_pie_menus():
 
     classlists, keylists, count = get_workspace_pie(classlists, keylists, count)
 
-    return classlists, keylists, count
 
+    # TOOLS
 
-def get_menus():
-    classlists = []
-    keylists = []
-    count = 0
-
-    # OBJECT CONTEXT MENU
-
-    classlists, keylists, count = get_object_context_menu(classlists, keylists, count)
+    classlists, keylists, count = get_tools_pie(classlists, keylists, count)
 
     return classlists, keylists, count
 
@@ -528,7 +547,7 @@ def get_apply(classlists=[], keylists=[], count=0):
 def get_select(classlists=[], keylists=[], count=0):
     if get_prefs().activate_select:
         classlists.append(classesdict["SELECT"])
-        # keylists.append(keysdict["ALIGN"])
+        # keylists.append(keysdict["SELECT"])
         count +=1
 
     return classlists, keylists, count
@@ -538,6 +557,65 @@ def get_mesh_cut(classlists=[], keylists=[], count=0):
     if get_prefs().activate_mesh_cut:
         classlists.append(classesdict["MESH_CUT"])
         # keylists.append(keysdict["ALIGN"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_surface_slide(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_surface_slide:
+        classlists.append(classesdict["SURFACE_SLIDE"])
+        # keylists.append(keysdict["ALIGN"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_filebrowser(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_filebrowser_tools:
+        classlists.append(classesdict["FILEBROWSER"])
+        keylists.append(keysdict["FILEBROWSER"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_smart_drive(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_smart_drive:
+        classlists.append(classesdict["SMART_DRIVE"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_unity(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_unity:
+        classlists.append(classesdict["UNITY"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_material_picker(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_material_picker:
+        classlists.append(classesdict["MATERIAL_PICKER"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_group(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_group:
+        classlists.append(classesdict["GROUP"])
+        keylists.append(keysdict["GROUP"])
+        count +=1
+
+    return classlists, keylists, count
+
+
+def get_thread(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_thread:
+        classlists.append(classesdict["THREAD"])
         count +=1
 
     return classlists, keylists, count
@@ -613,6 +691,24 @@ def get_cursor_pie(classlists=[], keylists=[], count=0):
     return classlists, keylists, count
 
 
+def get_transform_pie(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_transform_pie:
+        classlists.append(classesdict["TRANSFORM_PIE"])
+        keylists.append(keysdict["TRANSFORM_PIE"])
+        count += 1
+
+    return classlists, keylists, count
+
+
+def get_snapping_pie(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_snapping_pie:
+        classlists.append(classesdict["SNAPPING_PIE"])
+        keylists.append(keysdict["SNAPPING_PIE"])
+        count += 1
+
+    return classlists, keylists, count
+
+
 def get_collections_pie(classlists=[], keylists=[], count=0):
     if get_prefs().activate_collections_pie:
         classlists.append(classesdict["COLLECTIONS_PIE"])
@@ -631,11 +727,10 @@ def get_workspace_pie(classlists=[], keylists=[], count=0):
     return classlists, keylists, count
 
 
-# GET OBJECT SPECIALS MENU
-
-def get_object_context_menu(classlists=[], keylists=[], count=0):
-    if get_prefs().activate_object_context_menu:
-        classlists.append(classesdict["OBJECT_CONTEXT_MENU"])
+def get_tools_pie(classlists=[], keylists=[], count=0):
+    if get_prefs().activate_tools_pie:
+        classlists.append(classesdict["TOOLS_PIE"])
+        keylists.append(keysdict["TOOLS_PIE"])
         count += 1
 
     return classlists, keylists, count

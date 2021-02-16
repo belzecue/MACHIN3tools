@@ -1,6 +1,5 @@
 import bpy
-from ... utils import MACHIN3 as m3
-
+from ... utils.draw import add_object_axes_drawing_handler, remove_object_axes_drawing_handler
 
 axis_x = True
 axis_y = True
@@ -10,6 +9,7 @@ axis_z = False
 class ToggleGrid(bpy.types.Operator):
     bl_idname = "machin3.toggle_grid"
     bl_label = "Toggle Grid"
+    bl_description = "Toggle Grid, distinguish between the grid in regular views and orthographic side views"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -19,7 +19,7 @@ class ToggleGrid(bpy.types.Operator):
         overlay = view.overlay
         perspective_type = view.region_3d.view_perspective
 
-        mode = "GRID" if perspective_type == "ORTHO" else "FLOOR"
+        mode = "GRID" if perspective_type == "ORTHO" and view.region_3d.is_orthographic_side_view else "FLOOR"
 
         if mode == "FLOOR":
             if overlay.show_floor:
@@ -56,6 +56,13 @@ class ToggleWireframe(bpy.types.Operator):
     bl_label = "Toggle Wireframe"
     bl_options = {'REGISTER'}
 
+    @classmethod
+    def description(cls, context, properties):
+        if context.mode == 'OBJECT':
+            return "Toggle Wireframe display for the selected objects\nNothing Selected: Toggle Wireframe Overlay, affecting all objects"
+        elif context.mode == 'EDIT_MESH':
+            return "Toggle X-Ray, resembling how edit mode wireframes worked in Blender 2.79"
+
     def execute(self, context):
         overlay = context.space_data.overlay
 
@@ -76,40 +83,24 @@ class ToggleWireframe(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class ToggleOutline(bpy.types.Operator):
-    bl_idname = "machin3.toggle_outline"
-    bl_label = "Toggle Outline"
+class ToggleObjectAxes(bpy.types.Operator):
+    bl_idname = "machin3.toggle_object_axes"
+    bl_label = "MACHIN3: Toggle Object Axes"
+    bl_description = "Show local axes on objects in selection, or all visible objects if nothing is selected"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        shading = context.space_data.shading
+        dns = bpy.app.driver_namespace
+        handler = dns.get('draw_object_axes')
 
-        shading.show_object_outline = not shading.show_object_outline
+        if handler:
+            remove_object_axes_drawing_handler(handler)
 
-        return {'FINISHED'}
+        else:
+            objs = [obj for obj in context.selected_objects] if context.selected_objects else context.visible_objects
 
+            if objs:
+                add_object_axes_drawing_handler(dns, context, objs, True)
 
-class ToggleCavity(bpy.types.Operator):
-    bl_idname = "machin3.toggle_cavity"
-    bl_label = "Toggle Cavity"
-    bl_options = {'REGISTER'}
-
-    def execute(self, context):
-        scene = context.scene
-
-        scene.M3.show_cavity = not scene.M3.show_cavity
-
-        return {'FINISHED'}
-
-
-class ToggleCurvature(bpy.types.Operator):
-    bl_idname = "machin3.toggle_curvature"
-    bl_label = "Toggle Curvature"
-    bl_options = {'REGISTER'}
-
-    def execute(self, context):
-        scene = context.scene
-
-        scene.M3.show_curvature = not scene.M3.show_curvature
-
+        context.area.tag_redraw()
         return {'FINISHED'}

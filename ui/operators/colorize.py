@@ -1,8 +1,9 @@
 import bpy
+from bpy.props import FloatProperty, EnumProperty, BoolProperty
 import random
-from bpy.props import FloatProperty, EnumProperty
 from ... utils.registration import get_addon
 from ... utils.material import get_last_node, lighten_color
+from ... colors import group_colors
 
 
 # TODO: unique preset colors for decal types
@@ -10,7 +11,7 @@ from ... utils.material import get_last_node, lighten_color
 class ColorizeMaterials(bpy.types.Operator):
     bl_idname = "machin3.colorize_materials"
     bl_label = "MACHIN3: Colorize Materials"
-    descriptino = "Set Material Viewport Colors from last Node in Materials"
+    bl_description = "Set Material Viewport Colors from last Node in Material"
     bl_options = {'REGISTER', 'UNDO'}
 
     lighten_amount: FloatProperty(name="Lighten", default=0.05, min=0, max=1)
@@ -45,10 +46,12 @@ class ColorizeObjectsFromMaterials(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.selected_objects
+        return [obj for obj in context.selected_objects if obj.type != 'EMPTY']
 
     def execute(self, context):
-        for obj in context.selected_objects:
+        objects = [obj for obj in context.selected_objects if obj.type != 'EMPTY']
+
+        for obj in objects:
             mat = obj.active_material
 
             if mat:
@@ -77,13 +80,12 @@ class ColorizeObjectsFromActive(bpy.types.Operator):
         return context.active_object and context.selected_objects
 
     def execute(self, context):
-        activecolor = context.active_object.color
+        active = context.active_object
 
         for obj in context.selected_objects:
-            obj.color = activecolor
+            obj.color = active.color
 
         return {'FINISHED'}
-
 
 
 multi_collection_items = [("LEAST", "Least", ""),
@@ -94,6 +96,8 @@ decal_collection_items = [("TYPE", "Type", ""),
                           ("PARENT", "Parent", ""),
                           ("IGNORE", "Ignore", "")]
 
+
+# TODO: colorize objects from Groups
 
 class ColorizeObjectsFromCollections(bpy.types.Operator):
     bl_idname = "machin3.colorize_objects_from_collections"
@@ -181,3 +185,85 @@ class ColorizeObjectsFromCollections(bpy.types.Operator):
         # print(self.msg)
 
         return {'FINISHED'}
+
+
+class ColorizeObjectsFromGroups(bpy.types.Operator):
+    bl_idname = "machin3.colorize_objects_from_groups"
+    bl_label = "MACHIN3: Colorize Objects from Groups"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    random_color: BoolProperty(name="Random Color", default=True)
+    active_only: BoolProperty(name="Active Group Only", default=False)
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode == 'OBJECT':
+            return [obj for obj in context.selected_objects if obj.M3.is_group_empty]
+
+    @classmethod
+    def description(cls, context, properties):
+        if context.active_object and context.active_object.M3.is_group_empty:
+            return "Recursively Set Random Object Viewport Colors for Group Objects based on Group Membership\nALT: Set Group Member Colors based on existing Group Empy Colors\nCTRL: Only Colorize the Active Group"
+        else:
+            return "Recursively Set Random Object Viewport Colors for Group Objects based on Group Membership\nALT: Set Group Member Colors based on existing Group Empy Colors"
+
+    def draw(self, context):
+        layout = self.layout
+
+        column = layout.column()
+        row = column.row(align=True)
+        row.prop(self, 'random_color', toggle=True)
+
+        if context.active_object and context.active_object.M3.is_group_empty:
+            row.prop(self, 'active_only', toggle=True)
+
+    def invoke(self, context, event):
+        self.random_color = not event.alt
+        self.active_only = event.ctrl
+        return self.execute(context)
+
+    def execute(self, context):
+        self.colors = group_colors.copy()
+        active_group = context.active_object if context.active_object and context.active_object.M3.is_group_empty else None
+
+        # colorize active group only
+        if active_group and self.active_only:
+            self.colorize_group(active_group, recursive=False)
+
+        # colorize all groups recursively, from the top levels down
+        else:
+            all_empties = [obj for obj in context.selected_objects if obj.M3.is_group_empty]
+            top_level = [obj for obj in all_empties if obj.parent not in all_empties]
+
+            for group in top_level:
+                self.colorize_group(group, recursive=True)
+
+        return {'FINISHED'}
+
+    def colorize_group(self, empty, recursive=False):
+        children = [c for c in empty.children if c.M3.is_group_object]
+
+        color = self.get_random_color() if self.random_color else empty.color
+
+        if self.random_color:
+            empty.color = color
+
+        for c in children:
+            if c.M3.is_group_empty:
+                if recursive:
+                    self.colorize_group(c, recursive=recursive)
+            else:
+                c.color = color
+
+    def get_random_color(self):
+        '''
+        pick random colors from list of nice colors
+        only when all the list's colors are used, create new truly random ones
+        '''
+
+        if self.colors:
+            random_color = self.colors.pop(random.randint(0, len(self.colors) - 1))
+        else:
+            random_color = (random.random(), random.random(), random.random())
+
+        return tuple(list(random_color) + [1])

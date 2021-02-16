@@ -11,6 +11,7 @@ class QuadSphere(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     subdivisions: IntProperty(name='Subdivisions', default=4, min=1, max=8)
+    shade_smooth: BoolProperty(name="Shade Smooth", default=True)
 
     align_rotation: BoolProperty(name="Align Rotation", default=True)
 
@@ -21,19 +22,23 @@ class QuadSphere(bpy.types.Operator):
 
         row = column.row(align=True)
         row.prop(self, "subdivisions")
+        row.prop(self, "shade_smooth", toggle=True)
         row.prop(self, "align_rotation", toggle=True)
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT' or context.mode == 'EDIT_MESH'
+        return context.mode in ['OBJECT', 'EDIT_MESH']
 
     def execute(self, context):
-        obj = bpy.ops.mesh.primitive_cube_add(align='CURSOR' if self.align_rotation else 'WORLD')
+        bpy.ops.mesh.primitive_cube_add(align='CURSOR' if self.align_rotation else 'WORLD')
 
         mode = bpy.context.mode
 
         if mode == 'OBJECT':
             bpy.ops.object.mode_set(mode='EDIT')
+
+        if self.shade_smooth:
+            bpy.ops.mesh.faces_shade_smooth()
 
         for sub in range(self.subdivisions):
             bpy.ops.mesh.subdivide(number_cuts=1, smoothness=1)
@@ -44,5 +49,11 @@ class QuadSphere(bpy.types.Operator):
 
         quadsphere = context.active_object
         quadsphere.data.auto_smooth_angle = radians(60)
+
+        # clear uvs
+        mesh = quadsphere.data
+
+        while mesh.uv_layers:
+            mesh.uv_layers.remove(mesh.uv_layers[0])
 
         return {'FINISHED'}

@@ -1,45 +1,34 @@
-'''
-Copyright (C) 2016-2018 MACHIN3, machin3.io, support@machin3.io
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-'''
-
-
 bl_info = {
     "name": "MACHIN3tools",
     "author": "MACHIN3",
-    "version": (0, 3, 12),
-    "blender": (2, 80, 0),
+    "version": (0, 6, 0),
+    "blender": (2, 83, 0),
     "location": "",
-    "description": "Streamlining Blender 2.80.",
+    "description": "Streamlining Blender 2.83 and beyond.",
     "warning": "",
-    "wiki_url": "https://machin3.io/MACHIN3tools/docs",
+    "doc_url": "https://machin3.io/MACHIN3tools/docs",
     "category": "Mesh"}
 
 
 def reload_modules(name):
-    """
+    '''
     This makes sure all modules are reloaded from new files, when the addon is removed and a new version is installed in the same session,
     or when Blender's 'Reload Scripts' operator is run manually.
     It's important, that utils modules are reloaded first, as operators and menus import from them
-    """
+    '''
 
     import os
     import importlib
 
-    # first fetch and reload all utils modules
+
+    # first update the classes and keys dicts, the properties, items, colors
+    from . import registration, items, colors
+
+    for module in [registration, items, colors]:
+        print("reloading", module.__name__)
+        importlib.reload(module)
+
+    # then fetch and reload all utils modules
     utils_modules = sorted([name[:-3] for name in os.listdir(os.path.join(__path__[0], "utils")) if name.endswith('.py')])
 
     for module in utils_modules:
@@ -50,15 +39,16 @@ def reload_modules(name):
         exec(impline)
         importlib.reload(eval(module))
 
-    # then update the classes and keys dicts
-    from . import dicts
-    importlib.reload(dicts)
+
+    from . import handlers
+    print("reloading", handlers.__name__)
+    importlib.reload(handlers)
 
     # and based on that, reload the modules containing operator and menu classes
     modules = []
 
-    for label in dicts.classes:
-        entries = dicts.classes[label]
+    for label in registration.classes:
+        entries = registration.classes[label]
         for entry in entries:
             path = entry[0].split('.')
             module = path.pop(-1)
@@ -82,15 +72,16 @@ if 'bpy' in locals():
     reload_modules(bl_info['name'])
 
 import bpy
-from bpy.props import PointerProperty
-from . properties import M3SceneProperties
-from . utils.registration import get_core, get_tools, get_pie_menus, get_menus
-from . utils.registration import register_classes, unregister_classes, register_keymaps, unregister_keymaps, register_icons, unregister_icons, add_object_context_menu, remove_object_context_menu
-from . utils.registration import add_object_buttons
+from bpy.props import PointerProperty, BoolProperty
+from . properties import M3SceneProperties, M3ObjectProperties
+from . utils.registration import get_core, get_tools, get_pie_menus
+from . utils.registration import register_classes, unregister_classes, register_keymaps, unregister_keymaps, register_icons, unregister_icons, register_msgbus, unregister_msgbus
+from . ui.menus import object_context_menu, mesh_context_menu, add_object_buttons, material_pick_button, outliner_group_toggles, cursor_spin
+from . handlers import update_object_axes_drawing, focus_HUD, surface_slide_HUD, update_group, update_msgbus
 
 
 def register():
-    global classes, keymaps, icons
+    global classes, keymaps, icons, owner
 
     # CORE
 
@@ -100,19 +91,25 @@ def register():
     # PROPERTIES
 
     bpy.types.Scene.M3 = PointerProperty(type=M3SceneProperties)
+    bpy.types.Object.M3 = PointerProperty(type=M3ObjectProperties)
+
 
     # TOOLS, PIE MENUS, KEYMAPS, MENUS
 
     tool_classlists, tool_keylists, tool_count = get_tools()
     pie_classlists, pie_keylists, pie_count = get_pie_menus()
-    menu_classlists, menu_keylists, menu_count = get_menus()
 
-    classes = register_classes(tool_classlists + pie_classlists + menu_classlists) + core_classes
-    keymaps = register_keymaps(tool_keylists + pie_keylists + menu_keylists)
+    classes = register_classes(tool_classlists + pie_classlists) + core_classes
+    keymaps = register_keymaps(tool_keylists + pie_keylists)
 
-    add_object_context_menu()
+    bpy.types.VIEW3D_MT_object_context_menu.prepend(object_context_menu)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.prepend(mesh_context_menu)
 
+    bpy.types.VIEW3D_MT_edit_mesh_extrude.append(cursor_spin)
     bpy.types.VIEW3D_MT_mesh_add.prepend(add_object_buttons)
+    bpy.types.VIEW3D_MT_editor_menus.append(material_pick_button)
+    bpy.types.OUTLINER_HT_header.prepend(outliner_group_toggles)
+
 
 
     # ICONS
@@ -120,19 +117,68 @@ def register():
     icons = register_icons()
 
 
+    # MSGBUS
+
+    owner = object()
+    register_msgbus(owner)
+
+
+    # HANDLERS
+
+    bpy.app.handlers.load_post.append(update_msgbus)
+
+    bpy.app.handlers.undo_pre.append(update_object_axes_drawing)
+    bpy.app.handlers.redo_pre.append(update_object_axes_drawing)
+    bpy.app.handlers.load_pre.append(update_object_axes_drawing)
+
+    bpy.app.handlers.depsgraph_update_post.append(focus_HUD)
+    bpy.app.handlers.depsgraph_update_post.append(surface_slide_HUD)
+    bpy.app.handlers.depsgraph_update_post.append(update_group)
+
+
     # REGISTRATION OUTPUT
 
-    print("Registered %s %s with %d %s, %d pie %s and %s context %s" % (bl_info["name"], ".".join([str(i) for i in bl_info['version']]), tool_count, "tool" if tool_count == 1 else "tools", pie_count, "menu" if pie_count == 1 else "menus", menu_count, "menu" if menu_count == 1 else "menus"))
+    print(f"Registered {bl_info['name']} {'.'.join([str(i) for i in bl_info['version']])} with {tool_count} {'tool' if tool_count == 1 else 'tools'}, {pie_count} pie {'menu' if pie_count == 1 else 'menus'}")
 
 
 def unregister():
-    global classes, keymaps, icons
+    global classes, keymaps, icons, owner
+
+    # HANDLERS
+
+    bpy.app.handlers.load_post.remove(update_msgbus)
+
+    bpy.app.handlers.undo_pre.remove(update_object_axes_drawing)
+    bpy.app.handlers.redo_pre.remove(update_object_axes_drawing)
+    bpy.app.handlers.load_pre.remove(update_object_axes_drawing)
+
+    from . handlers import focusHUD, surfaceslideHUD
+
+    if focusHUD and "RNA_HANDLE_REMOVED" not in str(focusHUD):
+        bpy.types.SpaceView3D.draw_handler_remove(focusHUD, 'WINDOW')
+
+    if surfaceslideHUD and "RNA_HANDLE_REMOVED" not in str(surfaceslideHUD):
+        bpy.types.SpaceView3D.draw_handler_remove(surfaceslideHUD, 'WINDOW')
+
+    bpy.app.handlers.depsgraph_update_post.remove(focus_HUD)
+    bpy.app.handlers.depsgraph_update_post.remove(surface_slide_HUD)
+    bpy.app.handlers.depsgraph_update_post.remove(update_group)
+
+
+    # MSGBUS
+
+    unregister_msgbus(owner)
+
 
     # TOOLS, PIE MENUS, KEYMAPS, MENUS
 
-    bpy.types.VIEW3D_MT_mesh_add.remove(add_object_buttons)
+    bpy.types.VIEW3D_MT_object_context_menu.remove(object_context_menu)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(mesh_context_menu)
 
-    remove_object_context_menu()
+    bpy.types.VIEW3D_MT_edit_mesh_extrude.remove(cursor_spin)
+    bpy.types.VIEW3D_MT_mesh_add.remove(add_object_buttons)
+    bpy.types.VIEW3D_MT_editor_menus.remove(material_pick_button)
+    bpy.types.OUTLINER_HT_header.remove(outliner_group_toggles)
 
     unregister_keymaps(keymaps)
     unregister_classes(classes)
@@ -141,6 +187,7 @@ def unregister():
     # PROPERTIES
 
     del bpy.types.Scene.M3
+    del bpy.types.Object.M3
 
 
     # ICONS

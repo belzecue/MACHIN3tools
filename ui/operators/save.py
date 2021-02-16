@@ -7,8 +7,7 @@ import time
 from ... utils.registration import get_prefs, get_addon
 from ... utils.append import append_material, append_world
 from ... utils.system import add_path_to_recent_files
-from ... utils import MACHIN3 as m3
-
+from ... utils.ui import popup_message
 
 
 class New(bpy.types.Operator):
@@ -18,7 +17,7 @@ class New(bpy.types.Operator):
 
 
     def execute(self, context):
-        bpy.ops.wm.read_homefile(app_template="")
+        bpy.ops.wm.read_homefile(app_template="", load_ui=True)
 
         return {'FINISHED'}
 
@@ -26,7 +25,7 @@ class New(bpy.types.Operator):
         if bpy.data.is_dirty:
             return context.window_manager.invoke_confirm(self, event)
         else:
-            bpy.ops.wm.read_homefile(app_template="")
+            bpy.ops.wm.read_homefile(app_template="", load_ui=True)
             return {'FINISHED'}
 
 
@@ -46,8 +45,9 @@ class Save(bpy.types.Operator):
 
             t = time.time()
             localt = time.strftime('%H:%M:%S', time.localtime(t))
-
             print("%s | Saved blend: %s" % (localt, currentblend))
+            self.report({'INFO'}, 'Saved "%s"' % (os.path.basename(currentblend)))
+
         else:
             bpy.ops.wm.save_mainfile('INVOKE_DEFAULT')
 
@@ -65,21 +65,25 @@ class SaveIncremental(bpy.types.Operator):
         currentblend = bpy.data.filepath
 
         if currentblend:
-            save_path = self.get_incremented_path(currentblend)
+            savepath = self.get_incremented_path(currentblend)
 
             # add it to the recent files list
-            add_path_to_recent_files(save_path)
+            add_path_to_recent_files(savepath)
 
-            if os.path.exists(save_path):
-                self.report({'ERROR'}, "File '%s' exists already!\nBlend has NOT been saved incrementally!" % (save_path))
+            if os.path.exists(savepath):
+                self.report({'ERROR'}, "File '%s' exists already!\nBlend has NOT been saved incrementally!" % (savepath))
             else:
-                bpy.ops.wm.save_as_mainfile(filepath=save_path)
-                print("Saved blend incrementally:", save_path)
+                bpy.ops.wm.save_as_mainfile(filepath=savepath)
+
+                t = time.time()
+                localt = time.strftime('%H:%M:%S', time.localtime(t))
+                print("%s | Saved blend incrementally: %s" % (localt, savepath))
+                self.report({'INFO'}, 'Incrementally saved "%s"' % (os.path.basename(savepath)))
+
         else:
             bpy.ops.wm.save_mainfile('INVOKE_DEFAULT')
 
         return {'FINISHED'}
-
 
     def get_incremented_path(self, currentblend):
         path = os.path.dirname(currentblend)
@@ -114,6 +118,7 @@ class SaveIncremental(bpy.types.Operator):
 class LoadMostRecent(bpy.types.Operator):
     bl_idname = "machin3.load_most_recent"
     bl_label = "Load Most Recent"
+    bl_description = "Load most recently used .blend file"
     bl_options = {"REGISTER"}
 
     def execute(self, context):
@@ -128,8 +133,12 @@ class LoadMostRecent(bpy.types.Operator):
         if recent_files:
             most_recent = recent_files[0]
 
-            # load_ui ensures the the viewport location/angle is loaded as well
-            bpy.ops.wm.open_mainfile(filepath=most_recent, load_ui=True)
+            if os.path.exists(most_recent):
+                bpy.ops.wm.open_mainfile(filepath=most_recent, load_ui=True)
+                self.report({'INFO'}, 'Loaded most recent "%s"' % (os.path.basename(most_recent)))
+
+            else:
+                popup_message("File %s does not exist" % (most_recent), title="File not found")
 
         return {'FINISHED'}
 
@@ -162,27 +171,25 @@ class AppendWorld(bpy.types.Operator):
         return {'FINISHED'}
 
 
+decalmachine = None
+
+
 class AppendMaterial(bpy.types.Operator):
     bl_idname = "machin3.append_material"
     bl_label = "Append Material"
     bl_description = "Append material, or apply if it's already in the scene.\nSHIFT: Force append material, even if it's already in the scene."
     bl_options = {'REGISTER', 'UNDO'}
 
-    name: StringProperty(name="Append Name")
+    name: StringProperty(name='Append Name')
 
-    applymaterial: BoolProperty(name="Apply Material to Selection", default=True)
 
+    def draw(self, context):
+        layout = self.layout
+        column = layout.column()
 
     @classmethod
     def poll(cls, context):
         return get_prefs().appendmatspath
-
-    def draw(self, context):
-        layout = self.layout
-
-        column = layout.column()
-
-        column.prop(self, "applymaterial")
 
     def invoke(self, context, event):
         path = get_prefs().appendmatspath
@@ -201,35 +208,59 @@ class AppendMaterial(bpy.types.Operator):
                 mat = append_material(path, name)
 
             if mat:
-                if self.applymaterial:
-                    meshes = [obj for obj in context.selected_objects if obj.type in ["MESH", "SURFACE", "CURVE", "FONT", "META"]]
+                matobjs = [obj for obj in context.selected_objects if obj.type in ['MESH', 'SURFACE', 'CURVE', 'FONT', 'META']]
 
-                    decalmachine, _, _, _ = get_addon("DECALmachine")
+                # filter out decals, never apply materials to the this way
+                global decalmachine
 
-                    if decalmachine:
-                        meshes = [obj for obj in meshes if not obj.DM.isdecal]
+                if decalmachine is None:
+                    decalmachine, _, _, _ = get_addon('DECALmachine')
 
-                    for obj in meshes:
-                        # append material when there are no slots[creates a new slot automatically, as well as when in edit mode
-                        if not obj.material_slots or obj.mode == "EDIT":
+                if decalmachine:
+                    matobjs = [obj for obj in matobjs if not obj.DM.isdecal]
+
+                for obj in matobjs:
+
+                    # without any slots, create a new one and assign the material
+                    if not obj.material_slots:
+                        obj.data.materials.append(mat)
+
+                    # with slots, but without any materials, clear all slots, create a new one and assign the material
+                    elif not any(mat for mat in obj.data.materials):
+                        obj.data.materials.clear()
+                        obj.data.materials.append(mat)
+
+                    # with slots and with existing materials and in edit mesh mode, assign the material to the selection
+                    elif context.mode == 'EDIT_MESH':
+
+                        # but first check if the material already is assigned to another slot
+                        slot_idx = None
+
+                        for idx, slot in enumerate(obj.material_slots):
+                            if slot.material == mat:
+                                slot_idx = idx
+                                break
+
+                        # append the mat, if it's not already in the stack
+                        if slot_idx is None:
                             obj.data.materials.append(mat)
-                            idx = len(obj.data.materials) - 1
-
-                            if obj.mode == "EDIT":
-                                bm = bmesh.from_edit_mesh(obj.data)
-                                bm.normal_update()
-
-                                faces = [f for f in bm.faces if f.select]
-
-                                for face in faces:
-                                    face.material_index = idx
-
-                                bmesh.update_edit_mesh(obj.data)
+                            slot_idx = len(obj.material_slots) - 1
 
 
-                        # other wise just set the first slot's material
-                        else:
-                            obj.material_slots[0].material = mat
+                        # update the selected faces material_index accordingly
+                        bm = bmesh.from_edit_mesh(obj.data)
+                        bm.normal_update()
+
+                        faces = [f for f in bm.faces if f.select]
+
+                        for face in faces:
+                            face.material_index = slot_idx
+
+                        bmesh.update_edit_mesh(obj.data)
+
+                    # otherwise just apply it to the first slot
+                    else:
+                        obj.material_slots[0].material = mat
 
             else:
                 self.report({'ERROR'}, "Material '%s' could not be appended.\nMake sure a material of that name exists in the material source file." % (name))
@@ -278,84 +309,129 @@ class LoadMaterialsSource(bpy.types.Operator):
 
 class LoadPrevious(bpy.types.Operator):
     bl_idname = "machin3.load_previous"
-    bl_label = "Load Previous"
-    bl_description = "Load Previous Blend File in Current Folder"
+    bl_label = "Current file is unsaved. Load previous blend in folder anyway?"
+    bl_description = "Load Previous Blend File in Current Folder\nALT: Don't load ui"
     bl_options = {'REGISTER'}
+
+    load_ui: BoolProperty()
 
     @classmethod
     def poll(cls, context):
         return bpy.data.filepath
 
-    def execute(self, context):
-        filepath = bpy.data.filepath
+    def invoke(self, context, event):
+        self.load_ui = not event.alt
 
+        if bpy.data.filepath:
+            path, _, idx = self.get_data(bpy.data.filepath)
 
-        # """
+            if idx >= 0:
+                if bpy.data.is_dirty:
+                    return context.window_manager.invoke_confirm(self, event)
 
-        if filepath:
-            currentpath = os.path.dirname(filepath)
-            currentblend = os.path.basename(filepath)
+                else:
+                    self.execute(context)
 
-            blendfiles = [f for f in sorted(os.listdir(currentpath)) if f.endswith(".blend")]
-
-            index = blendfiles.index(currentblend)
-
-            previousidx = index - 1
-
-            if previousidx >= 0:
-                previousblend = blendfiles[previousidx]
-
-
-                loadpath = os.path.join(currentpath, previousblend)
-
-                # add the path to the recent files list, for some reason it's not done automatically
-                add_path_to_recent_files(loadpath)
-
-
-                print("Loading blend file %d/%d: %s" % (previousidx + 1, len(blendfiles), previousblend))
-                bpy.ops.wm.open_mainfile(filepath=loadpath, load_ui=True)
             else:
-                self.report({'ERROR'}, "You've reached the first file in the current foler: %s." % (currentpath))
-
-
+                popup_message("You've reached the first file in the current foler: %s." % (path), title="Info")
 
         return {'FINISHED'}
+
+    def execute(self, context):
+        path, files, idx = self.get_data(bpy.data.filepath)
+
+        loadpath = os.path.join(path, files[idx])
+
+        # add the path to the recent files list, for some reason it's not done automatically
+        add_path_to_recent_files(loadpath)
+
+        bpy.ops.wm.open_mainfile(filepath=loadpath, load_ui=self.load_ui)
+        self.report({'INFO'}, 'Loaded previous file "%s" (%d/%d)' % (os.path.basename(loadpath), idx + 1, len(files)))
+
+        return {'FINISHED'}
+
+    def get_data(self, filepath):
+        """
+        return path of current blend, all blend files in the folder or the current file as well as the index of the previous blend
+        """
+        currentpath = os.path.dirname(filepath)
+        currentblend = os.path.basename(filepath)
+
+        blendfiles = [f for f in sorted(os.listdir(currentpath)) if f.endswith(".blend")]
+        index = blendfiles.index(currentblend)
+        previousidx = index - 1
+
+        return currentpath, blendfiles, previousidx
 
 
 class LoadNext(bpy.types.Operator):
     bl_idname = "machin3.load_next"
-    bl_label = "Load Next"
-    bl_description = "Load Next Blend File in Current Folder"
+    bl_label = "Current file is unsaved. Load next blend in folder anyway?"
+    bl_description = "Load Next Blend File in Current Folder\nALT: Don't load ui"
     bl_options = {'REGISTER'}
+
+    load_ui: BoolProperty()
 
     @classmethod
     def poll(cls, context):
         return bpy.data.filepath
 
-    def execute(self, context):
-        filepath = bpy.data.filepath
+    def invoke(self, context, event):
+        self.load_ui = not event.alt
 
-        if filepath:
-            currentpath = os.path.dirname(filepath)
-            currentblend = os.path.basename(filepath)
+        if bpy.data.filepath:
+            path, files, idx = self.get_data(bpy.data.filepath)
 
-            blendfiles = [f for f in sorted(os.listdir(currentpath)) if f.endswith(".blend")]
+            if idx < len(files):
+                if bpy.data.is_dirty:
+                    return context.window_manager.invoke_confirm(self, event)
 
-            index = blendfiles.index(currentblend)
-
-            nextidx = index + 1
-
-            if nextidx < len(blendfiles):
-                nextblend = blendfiles[nextidx]
-
-                loadpath = os.path.join(currentpath, nextblend)
-
-                # add the path to the recent files list, for some reason it's not done automatically
-                add_path_to_recent_files(loadpath)
-
-                print("Loading blend file %d/%d: %s" % (nextidx + 1, len(blendfiles), nextblend))
-                bpy.ops.wm.open_mainfile(filepath=loadpath, load_ui=True)
+                else:
+                    self.execute(context)
             else:
-                self.report({'ERROR'}, "You've reached the last file in the current foler: %s." % (currentpath))
+                popup_message("You've reached the last file in the current foler: %s." % (path), title="Info")
+
+        return {'FINISHED'}
+
+    def execute(self, context):
+        path, files, idx = self.get_data(bpy.data.filepath)
+
+        loadpath = os.path.join(path, files[idx])
+
+        # add the path to the recent files list, for some reason it's not done automatically
+        add_path_to_recent_files(loadpath)
+
+        bpy.ops.wm.open_mainfile(filepath=loadpath, load_ui=self.load_ui)
+        self.report({'INFO'}, 'Loaded next file "%s" (%d/%d)' % (os.path.basename(loadpath), idx + 1, len(files)))
+
+        return {'FINISHED'}
+
+    def get_data(self, filepath):
+        """
+        return path of current blend, all blend files in the folder or the current file as well as the index of the next file 
+        """
+        currentpath = os.path.dirname(filepath)
+        currentblend = os.path.basename(filepath)
+
+        blendfiles = [f for f in sorted(os.listdir(currentpath)) if f.endswith(".blend")]
+        index = blendfiles.index(currentblend)
+        previousidx = index + 1
+
+        return currentpath, blendfiles, previousidx
+
+
+class Purge(bpy.types.Operator):
+    bl_idname = "machin3.purge_orphans"
+    bl_label = "MACHIN3: Purge Orphans"
+    bl_description = "Purge Orphans\nALT: Purge Orphans 5 times"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        if event.alt:
+            for i in range(5):
+                bpy.ops.outliner.orphans_purge()
+
+        else:
+            bpy.ops.outliner.orphans_purge()
 
         return {'FINISHED'}

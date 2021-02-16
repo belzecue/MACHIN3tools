@@ -3,6 +3,7 @@ from bpy.props import StringProperty
 from ... utils.registration import get_prefs
 from ... utils.view import set_xray, reset_xray, update_local_view
 from ... utils.object import parent
+from ... utils.tools import get_active_tool, get_tools_from_context
 
 
 user_cavity = True
@@ -13,11 +14,19 @@ class EditMode(bpy.types.Operator):
     bl_label = "Edit Mode"
     bl_options = {'REGISTER', 'UNDO'}
 
+    @classmethod
+    def description(cls, context, properties):
+        return f"Switch to {'Object' if context.mode == 'EDIT_MESH' else 'Edit'} Mode"
+
     def execute(self, context):
         global user_cavity
 
         shading = context.space_data.shading
         toggle_cavity = get_prefs().toggle_cavity
+        sync_tools = get_prefs().sync_tools
+
+        if sync_tools:
+            active_tool = get_active_tool(context)
 
         if context.mode == "OBJECT":
             set_xray(context)
@@ -27,6 +36,9 @@ class EditMode(bpy.types.Operator):
             if toggle_cavity:
                 user_cavity = shading.show_cavity
                 shading.show_cavity = False
+
+            if sync_tools and active_tool in get_tools_from_context(context):
+                bpy.ops.wm.tool_set_by_id(name=active_tool)
 
 
         elif context.mode == "EDIT_MESH":
@@ -38,22 +50,33 @@ class EditMode(bpy.types.Operator):
                 shading.show_cavity = True
                 user_cavity = True
 
+            if sync_tools and active_tool in get_tools_from_context(context):
+                bpy.ops.wm.tool_set_by_id(name=active_tool)
+
         return {'FINISHED'}
 
 
-class VertexMode(bpy.types.Operator):
-    bl_idname = "machin3.vertex_mode"
-    bl_label = "Vertex Mode"
-    bl_description = "Vertex Select\nCTRL + Click: Expand Selection"
+class MeshMode(bpy.types.Operator):
+    bl_idname = "machin3.mesh_mode"
+    bl_label = "Mesh Mode"
     bl_options = {'REGISTER', 'UNDO'}
+
+    mode: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        return "%s Select\nCTRL + Click: Expand Selection" % (properties.mode.capitalize())
 
     def invoke(self, context, event):
         global user_cavity
+
         shading = context.space_data.shading
         toggle_cavity = get_prefs().toggle_cavity
 
         if context.mode == "OBJECT":
             set_xray(context)
+
+            active_tool = get_active_tool(context) if get_prefs().sync_tools else None
 
             bpy.ops.object.mode_set(mode="EDIT")
 
@@ -61,65 +84,10 @@ class VertexMode(bpy.types.Operator):
                 user_cavity = shading.show_cavity
                 shading.show_cavity = False
 
-        expand = True if event.ctrl else False
+            if active_tool and active_tool in get_tools_from_context(context):
+                bpy.ops.wm.tool_set_by_id(name=active_tool)
 
-        bpy.ops.mesh.select_mode(use_extend=False, use_expand=expand, type='VERT')
-
-        return {'FINISHED'}
-
-
-class EdgeMode(bpy.types.Operator):
-    bl_idname = "machin3.edge_mode"
-    bl_label = "Edge Mode"
-    bl_description = "Edge Select\nCTRL + Click: Expand Selection"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def invoke(self, context, event):
-        global user_cavity
-        shading = context.space_data.shading
-        toggle_cavity = get_prefs().toggle_cavity
-
-        if context.mode == "OBJECT":
-            set_xray(context)
-
-            bpy.ops.object.mode_set(mode="EDIT")
-
-            if toggle_cavity:
-                user_cavity = shading.show_cavity
-                shading.show_cavity = False
-
-
-        expand = True if event.ctrl else False
-
-        bpy.ops.mesh.select_mode(use_extend=False, use_expand=expand, type='EDGE')
-
-        return {'FINISHED'}
-
-
-class FaceMode(bpy.types.Operator):
-    bl_idname = "machin3.face_mode"
-    bl_label = "Face Mode"
-    bl_description = "Face Select\nCTRL + Click: Expand Selection"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def invoke(self, context, event):
-        global user_cavity
-        shading = context.space_data.shading
-        toggle_cavity = get_prefs().toggle_cavity
-
-        if context.mode == "OBJECT":
-            set_xray(context)
-
-            bpy.ops.object.mode_set(mode="EDIT")
-
-            if toggle_cavity:
-                user_cavity = shading.show_cavity
-                shading.show_cavity = False
-
-        expand = True if event.ctrl else False
-
-        bpy.ops.mesh.select_mode(use_extend=False, use_expand=expand, type='FACE')
-
+        bpy.ops.mesh.select_mode(use_extend=False, use_expand=event.ctrl, type=self.mode)
         return {'FINISHED'}
 
 
@@ -134,12 +102,21 @@ class ImageMode(bpy.types.Operator):
         view = context.space_data
         active = context.active_object
 
+        toolsettings = context.scene.tool_settings
         view.mode = self.mode
 
         if self.mode == "UV" and active:
             if active.mode == "OBJECT":
+                uvs = active.data.uv_layers
+
+                # create new uv layer
+                if not uvs:
+                    uvs.new()
+
                 bpy.ops.object.mode_set(mode="EDIT")
-                bpy.ops.mesh.select_all(action="SELECT")
+
+                if not toolsettings.use_uv_select_sync:
+                    bpy.ops.mesh.select_all(action="SELECT")
 
         return {'FINISHED'}
 
@@ -170,7 +147,7 @@ class UVMode(bpy.types.Operator):
 class SurfaceDrawMode(bpy.types.Operator):
     bl_idname = "machin3.surface_draw_mode"
     bl_label = "MACHIN3: Surface Draw Mode"
-    bl_description = "Surface Draw, create parented, emptyGreasePencil object and enters DRAW mode.\nSHIFT: Select the Line tool."
+    bl_description = "Surface Draw, create parented, empty GreasePencil object and enter DRAW mode.\nSHIFT: Select the Line tool."
     bl_options = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
@@ -204,6 +181,8 @@ class SurfaceDrawMode(bpy.types.Operator):
         context.view_layer.objects.active = gp
         active.select_set(False)
         gp.select_set(True)
+
+        gp.color = (0, 0, 0, 1)
 
         bpy.ops.object.mode_set(mode='PAINT_GPENCIL')
 
